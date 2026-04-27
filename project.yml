@@ -1,0 +1,27 @@
+name: AnyMix
+options:
+  bundleIdPrefix: com.anymix
+  deploymentTarget:
+    macOS: "14.2"
+  xcodeVersion: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.2"
+targets:
+  AnyMix:
+    type: application
+    platform: macOS
+    sources:
+      - path: AnyMix
+        excludes:
+          - "Resources/Info.plist"
+          - "Resources/AnyMix.entitlements"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.anymix.app
+        INFOPLIST_FILE: AnyMix/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: AnyMix/Resources/AnyMix.entitlements
+        PRODUCT_NAME: AnyMix
+        CODE_SIGN_IDENTITY: "-"
+        SWIFT_STRICT_CONCURRENCY: minimal
