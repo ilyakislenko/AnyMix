@@ -43,6 +43,9 @@ struct PopoverContentView: View {
                                 },
                                 onToggleMute: {
                                     audioEngine.toggleMute(for: app.pid)
+                                },
+                                onCycleBoost: {
+                                    audioEngine.cycleBoost(for: app.pid)
                                 }
                             )
                         }

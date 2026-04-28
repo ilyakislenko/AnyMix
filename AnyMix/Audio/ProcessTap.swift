@@ -111,7 +111,13 @@ final class ProcessTap {
 
                 for frame in 0..<frameCount {
                     currentVol += (targetGain - currentVol) * rampCoefficient
-                    outData[frame] = inData[frame] * currentVol
+                    var sample = inData[frame] * currentVol
+                    // Soft limiter: tanh-based to prevent clipping on boost
+                    if currentVol > 1.0 {
+                        if sample > 1.0 { sample = tanhf(sample) }
+                        else if sample < -1.0 { sample = -tanhf(-sample) }
+                    }
+                    outData[frame] = sample
                 }
             }
 

@@ -12,10 +12,16 @@ final class AppAudioState: Identifiable {
     var volume: Float
     var isMuted: Bool
     var isActive: Bool
+    var boostLevel: Int  // 1, 2, 3, or 4
+
+    /// Effective gain = volume * boost. E.g. 80% at 3x = 2.4
+    var effectiveVolume: Float {
+        volume * Float(boostLevel)
+    }
 
     var id: pid_t { pid }
 
-    init(process: AudioProcess, volume: Float = 1.0, isMuted: Bool = false) {
+    init(process: AudioProcess, volume: Float = 1.0, isMuted: Bool = false, boostLevel: Int = 1) {
         self.pid = process.pid
         self.bundleID = process.rootBundleID
         self.name = process.name
@@ -23,6 +29,7 @@ final class AppAudioState: Identifiable {
         self.volume = volume
         self.isMuted = isMuted
         self.isActive = true
+        self.boostLevel = boostLevel
     }
 }
 
@@ -58,8 +65,21 @@ final class AudioEngine {
     func setVolume(_ volume: Float, for pid: pid_t) {
         guard let app = apps.first(where: { $0.pid == pid }) else { return }
         app.volume = volume
-        taps[pid]?.targetVolume = volume
+        taps[pid]?.targetVolume = app.effectiveVolume
         volumeStore.setVolume(volume, for: app.bundleID)
+    }
+
+    func setBoost(_ level: Int, for pid: pid_t) {
+        guard let app = apps.first(where: { $0.pid == pid }) else { return }
+        app.boostLevel = level
+        taps[pid]?.targetVolume = app.effectiveVolume
+        volumeStore.setBoost(level, for: app.bundleID)
+    }
+
+    func cycleBoost(for pid: pid_t) {
+        guard let app = apps.first(where: { $0.pid == pid }) else { return }
+        let next = app.boostLevel >= 4 ? 1 : app.boostLevel + 1
+        setBoost(next, for: pid)
     }
 
     func setMuted(_ muted: Bool, for pid: pid_t) {
@@ -110,11 +130,12 @@ final class AudioEngine {
     private func addProcess(_ process: AudioProcess) {
         let savedVolume = volumeStore.volume(for: process.rootBundleID)
         let savedMuted = volumeStore.isMuted(for: process.rootBundleID)
+        let savedBoost = volumeStore.boost(for: process.rootBundleID)
 
-        let state = AppAudioState(process: process, volume: savedVolume, isMuted: savedMuted)
+        let state = AppAudioState(process: process, volume: savedVolume, isMuted: savedMuted, boostLevel: savedBoost)
 
         let tap = ProcessTap(pid: process.pid)
-        tap.targetVolume = savedVolume
+        tap.targetVolume = state.effectiveVolume
         tap.isMuted = savedMuted
 
         do {

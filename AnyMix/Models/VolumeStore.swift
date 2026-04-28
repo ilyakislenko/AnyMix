@@ -10,6 +10,7 @@ final class VolumeStore {
     struct AppVolume: Codable {
         var volume: Float
         var isMuted: Bool
+        var boostLevel: Int?  // 1-4, nil = 1 (backwards compatible)
     }
 
     /// In-memory cache of saved volumes keyed by bundle ID.
@@ -25,6 +26,20 @@ final class VolumeStore {
 
     func isMuted(for bundleID: String) -> Bool {
         savedVolumes[bundleID]?.isMuted ?? false
+    }
+
+    func boost(for bundleID: String) -> Int {
+        savedVolumes[bundleID]?.boostLevel ?? 1
+    }
+
+    func setBoost(_ level: Int, for bundleID: String) {
+        guard !isSystem(bundleID) else { return }
+        if savedVolumes[bundleID] == nil {
+            savedVolumes[bundleID] = AppVolume(volume: 1.0, isMuted: false, boostLevel: level)
+        } else {
+            savedVolumes[bundleID]?.boostLevel = level
+        }
+        save()
     }
 
     func setVolume(_ volume: Float, for bundleID: String) {
