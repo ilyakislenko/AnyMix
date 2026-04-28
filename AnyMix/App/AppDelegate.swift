@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         audioEngine = AudioEngine(volumeStore: volumeStore)
+        audioEngine.inactiveTimeout = UserDefaults.standard.double(forKey: "inactiveTimeout")
 
         let popover = NSPopover()
         popover.contentSize = NSSize(width: 320, height: 300)
@@ -53,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             DispatchQueue.main.async {
+                self?.audioEngine.inactiveTimeout = UserDefaults.standard.double(forKey: "inactiveTimeout")
                 self?.audioEngine.refresh()
                 self?.updateStatusIcon()
             }

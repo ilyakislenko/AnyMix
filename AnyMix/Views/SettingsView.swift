@@ -56,7 +56,7 @@ struct GeneralTab: View {
                 TextField("", value: $inactiveTimeout, format: .number)
                     .frame(width: 50)
                     .textFieldStyle(.roundedBorder)
-                Text("seconds")
+                Text("sec (0 = never)")
             }
         }
         .formStyle(.grouped)

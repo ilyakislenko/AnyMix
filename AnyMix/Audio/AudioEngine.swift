@@ -129,6 +129,10 @@ final class AudioEngine {
 
     private func markInactive(_ app: AppAudioState) {
         app.isActive = false
+
+        // 0 = never remove inactive apps
+        guard inactiveTimeout > 0 else { return }
+
         let timer = Timer.scheduledTimer(withTimeInterval: inactiveTimeout, repeats: false) { [weak self] _ in
             self?.removeProcess(app.pid)
         }
