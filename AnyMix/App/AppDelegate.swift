@@ -31,8 +31,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 accessibilityDescription: "AnyMix"
             )
             button.image?.isTemplate = true
-            button.action = #selector(togglePopover(_:))
+            button.action = #selector(statusItemClicked(_:))
             button.target = self
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
 
         NotificationCenter.default.addObserver(
@@ -61,16 +62,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func togglePopover(_ sender: AnyObject?) {
-        guard let button = statusItem.button else { return }
+    @objc private func statusItemClicked(_ sender: AnyObject?) {
+        guard let button = statusItem.button,
+              let event = NSApp.currentEvent else { return }
 
-        if popover.isShown {
-            popover.performClose(sender)
+        if event.type == .rightMouseUp {
+            showContextMenu()
         } else {
-            audioEngine.refresh()
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.becomeKey()
+            if popover.isShown {
+                popover.performClose(sender)
+            } else {
+                audioEngine.refresh()
+                popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                popover.contentViewController?.view.window?.becomeKey()
+            }
         }
+    }
+
+    private func showContextMenu() {
+        let menu = NSMenu()
+
+        let settingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(title: "Quit AnyMix", action: #selector(quitApp), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        // Reset menu so left click still opens popover
+        statusItem.menu = nil
+    }
+
+    @objc private func quitApp() {
+        NSApp.terminate(nil)
     }
 
     @objc private func openSettings() {
