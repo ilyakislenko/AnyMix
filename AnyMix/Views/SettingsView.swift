@@ -80,7 +80,7 @@ struct SavedVolumesTab: View {
                     ForEach(Array(volumeStore.savedVolumes.keys.sorted()), id: \.self) { bundleID in
                         if let appVolume = volumeStore.savedVolumes[bundleID] {
                             HStack {
-                                Text(bundleID)
+                                Text(Self.appName(for: bundleID))
                                     .font(.system(size: 12))
                                     .lineLimit(1)
                                 Spacer()
@@ -115,6 +115,14 @@ struct SavedVolumesTab: View {
             }
             .padding()
         }
+    }
+
+    static func appName(for bundleID: String) -> String {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            return FileManager.default.displayName(atPath: url.path)
+        }
+        // Fallback: take last component, e.g. "com.google.Chrome" → "Chrome"
+        return bundleID.components(separatedBy: ".").last ?? bundleID
     }
 }
 

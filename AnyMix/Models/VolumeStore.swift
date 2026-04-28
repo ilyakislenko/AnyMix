@@ -28,6 +28,7 @@ final class VolumeStore {
     }
 
     func setVolume(_ volume: Float, for bundleID: String) {
+        guard !isSystem(bundleID) else { return }
         if savedVolumes[bundleID] == nil {
             savedVolumes[bundleID] = AppVolume(volume: volume, isMuted: false)
         } else {
@@ -37,12 +38,17 @@ final class VolumeStore {
     }
 
     func setMuted(_ muted: Bool, for bundleID: String) {
+        guard !isSystem(bundleID) else { return }
         if savedVolumes[bundleID] == nil {
             savedVolumes[bundleID] = AppVolume(volume: 1.0, isMuted: muted)
         } else {
             savedVolumes[bundleID]?.isMuted = muted
         }
         save()
+    }
+
+    private func isSystem(_ bundleID: String) -> Bool {
+        Self.systemPrefixes.contains(where: { bundleID.hasPrefix($0) })
     }
 
     func resetAll() {
@@ -55,11 +61,18 @@ final class VolumeStore {
         save()
     }
 
+    private static let systemPrefixes = [
+        "com.apple.", "com.anymix.", "systemsoundserverd",
+    ]
+
     private func load() {
         guard let data = defaults.data(forKey: storageKey),
               let decoded = try? JSONDecoder().decode([String: AppVolume].self, from: data)
         else { return }
-        savedVolumes = decoded
+        // Filter out system bundle IDs that got saved by mistake
+        savedVolumes = decoded.filter { key, _ in
+            !Self.systemPrefixes.contains(where: { key.hasPrefix($0) })
+        }
     }
 
     private func save() {
