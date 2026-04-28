@@ -41,7 +41,7 @@ final class ProcessTap {
         let desc = CATapDescription(stereoMixdownOfProcesses: [objectID])
         desc.name = "AnyMix-\(pid)"
         desc.uuid = UUID()
-        desc.muteBehavior = .muted
+        desc.muteBehavior = .mutedWhenTapped
         desc.isPrivate = true
 
         var newTapID: AudioObjectID = AudioObjectID(kAudioObjectUnknown)

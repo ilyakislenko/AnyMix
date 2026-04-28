@@ -141,6 +141,7 @@ final class AudioEngine {
         do {
             try tap.start(objectID: process.objectID)
             taps[process.pid] = tap
+            AnyMixLogger.log("Tap started: \(process.name) pid=\(process.pid) vol=\(state.effectiveVolume) boost=\(savedBoost) muted=\(savedMuted)")
         } catch {
             AnyMixLogger.log("Failed to start tap for \(process.name) (pid \(process.pid)): \(error)")
         }
