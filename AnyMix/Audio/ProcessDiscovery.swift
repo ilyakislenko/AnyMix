@@ -47,7 +47,7 @@ final class ProcessDiscovery: @unchecked Sendable {
         var result: [AudioProcess] = []
 
         for objectID in processIDs {
-            guard isRunningOutput(objectID) else { continue }
+            guard isRunningAudio(objectID) else { continue }
             guard let pid = getPID(objectID), pid > 0, pid != ownPID else { continue }
             guard seen.insert(pid).inserted else { continue }
 
@@ -97,16 +97,25 @@ final class ProcessDiscovery: @unchecked Sendable {
         return objectIDs
     }
 
-    private func isRunningOutput(_ objectID: AudioObjectID) -> Bool {
+    /// Check if a process has active audio (either isRunning or isRunningOutput).
+    private func isRunningAudio(_ objectID: AudioObjectID) -> Bool {
+        // Check isRunningOutput first
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioProcessPropertyIsRunningOutput,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        var isRunning: UInt32 = 0
+        var val: UInt32 = 0
         var size = UInt32(MemoryLayout<UInt32>.size)
-        AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, &isRunning)
-        return isRunning != 0
+        AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, &val)
+        if val != 0 { return true }
+
+        // Fallback: check isRunning (any audio IO, including output)
+        address.mSelector = kAudioProcessPropertyIsRunning
+        val = 0
+        size = UInt32(MemoryLayout<UInt32>.size)
+        AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, &val)
+        return val != 0
     }
 
     private func getPID(_ objectID: AudioObjectID) -> pid_t? {
