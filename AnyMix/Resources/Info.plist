@@ -20,5 +20,7 @@
     <true/>
     <key>LSMinimumSystemVersion</key>
     <string>14.2</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>AnyMix uses audio input access to capture and control per-app audio volume.</string>
 </dict>
 </plist>

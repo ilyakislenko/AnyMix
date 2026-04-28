@@ -2,18 +2,13 @@ import CoreAudio
 import AudioToolbox
 import Foundation
 
-/// Manages a single audio tap on one process.
 @available(macOS 14.2, *)
 final class ProcessTap {
     let pid: pid_t
 
-    /// Target volume (0.0 = silent, 1.0 = unity).
     var targetVolume: Float = 1.0
-
-    /// Whether this tap is muted.
     var isMuted: Bool = false
 
-    /// Effective gain applied (considering mute state).
     var effectiveGain: Float {
         isMuted ? 0.0 : targetVolume
     }
@@ -22,6 +17,7 @@ final class ProcessTap {
     private var aggregateDeviceID: AudioObjectID = AudioObjectID(kAudioObjectUnknown)
     private var ioProcID: AudioDeviceIOProcID?
     private var isRunning = false
+    private let queue = DispatchQueue(label: "com.anymix.tap", qos: .userInitiated)
 
     private var currentVolume: Float = 1.0
     private let rampTime: Float = 0.030
@@ -34,16 +30,17 @@ final class ProcessTap {
         stop()
     }
 
-    /// Start tapping the process audio.
     func start(objectID: AudioObjectID) throws {
         guard !isRunning else { return }
 
+        // 1. Create tap description — exactly like FineTune
         let desc = CATapDescription(stereoMixdownOfProcesses: [objectID])
         desc.name = "AnyMix-\(pid)"
         desc.uuid = UUID()
         desc.muteBehavior = .mutedWhenTapped
         desc.isPrivate = true
 
+        // 2. Create process tap
         var newTapID: AudioObjectID = AudioObjectID(kAudioObjectUnknown)
         var status = AudioHardwareCreateProcessTap(desc, &newTapID)
         guard status == noErr else {
@@ -51,8 +48,10 @@ final class ProcessTap {
         }
         self.tapID = newTapID
 
+        // 3. Get default output device UID
         let outputUID = try getDefaultOutputDeviceUID()
 
+        // 4. Create aggregate device — matching FineTune's config
         let aggregateDesc: [String: Any] = [
             kAudioAggregateDeviceNameKey as String: "AnyMix-\(pid)",
             kAudioAggregateDeviceUIDKey as String: UUID().uuidString,
@@ -62,7 +61,10 @@ final class ProcessTap {
             kAudioAggregateDeviceIsStackedKey as String: true,
             kAudioAggregateDeviceTapAutoStartKey as String: true,
             kAudioAggregateDeviceSubDeviceListKey as String: [
-                [kAudioSubDeviceUIDKey as String: outputUID]
+                [
+                    kAudioSubDeviceUIDKey as String: outputUID,
+                    kAudioSubDeviceDriftCompensationKey as String: false
+                ]
             ],
             kAudioAggregateDeviceTapListKey as String: [
                 [
@@ -80,67 +82,59 @@ final class ProcessTap {
         }
         self.aggregateDeviceID = newAggregateID
 
+        // 5. Wait for device to become alive (like FineTune's waitUntilReady)
+        for _ in 0..<20 {
+            if isDeviceAlive(newAggregateID) { break }
+            CFRunLoopRunInMode(.defaultMode, 0.1, false)
+        }
+
         let sampleRate = getSampleRate(aggregateDeviceID)
         let rampCoefficient: Float = 1.0 - exp(-1.0 / (Float(sampleRate) * rampTime))
 
+        // 6. Create IOProc with dispatch queue (like FineTune)
         var procID: AudioDeviceIOProcID?
         let tapSelf = Unmanaged.passUnretained(self).toOpaque()
 
         status = AudioDeviceCreateIOProcIDWithBlock(
             &procID,
             aggregateDeviceID,
-            nil
+            queue
         ) { [rampCoefficient] _, inInputData, _, outOutputData, _ in
             let tap = Unmanaged<ProcessTap>.fromOpaque(tapSelf).takeUnretainedValue()
             let targetGain = tap.effectiveGain
             var currentVol = tap.currentVolume
 
-            let inputBufferList = UnsafeMutableAudioBufferListPointer(
-                UnsafeMutablePointer(mutating: inInputData)
-            )
-            let outputBufferList = UnsafeMutableAudioBufferListPointer(outOutputData)
+            let inBufs = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inInputData))
+            let outBufs = UnsafeMutableAudioBufferListPointer(outOutputData)
 
-            let inCount = inputBufferList.count
-            let outCount = outputBufferList.count
+            let inCount = inBufs.count
+            let outCount = outBufs.count
 
-            // Tap input buffers may be offset when aggregate has more
-            // input buffers than output buffers (tap buffers come after device buffers)
-            let inputOffset = inCount > outCount ? inCount - outCount : 0
+            // Buffer offset — tap input may be after device output buffers
+            // (FineTune: inputIndex = inputBufferCount - outputBufferCount + outputIndex)
+            let offset = inCount > outCount ? inCount - outCount : 0
 
             for outIdx in 0..<outCount {
-                let inIdx = inputOffset + outIdx
-                let outputBuffer = outputBufferList[outIdx]
+                let inIdx = offset + outIdx
+                let outBuf = outBufs[outIdx]
+                guard let outData = outBuf.mData?.assumingMemoryBound(to: Float.self) else { continue }
+                let outFrames = Int(outBuf.mDataByteSize) / MemoryLayout<Float>.size
 
-                guard let outData = outputBuffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
-                let frameCount = Int(outputBuffer.mDataByteSize) / MemoryLayout<Float>.size
+                if inIdx < inCount,
+                   let inData = inBufs[inIdx].mData?.assumingMemoryBound(to: Float.self) {
+                    let inFrames = Int(inBufs[inIdx].mDataByteSize) / MemoryLayout<Float>.size
+                    let count = min(outFrames, inFrames)
 
-                if inIdx < inCount {
-                    let inputBuffer = inputBufferList[inIdx]
-                    guard let inData = inputBuffer.mData?.assumingMemoryBound(to: Float.self) else {
-                        // Zero output if input unavailable
-                        memset(outputBuffer.mData, 0, Int(outputBuffer.mDataByteSize))
-                        continue
-                    }
-
-                    let inFrames = Int(inputBuffer.mDataByteSize) / MemoryLayout<Float>.size
-                    let count = min(frameCount, inFrames)
-
-                    for frame in 0..<count {
+                    for f in 0..<count {
                         currentVol += (targetGain - currentVol) * rampCoefficient
-                        var sample = inData[frame] * currentVol
-                        // Soft limiter for boost
-                        if currentVol > 1.0 {
-                            if sample > 1.0 { sample = tanhf(sample) }
-                            else if sample < -1.0 { sample = -tanhf(-sample) }
-                        }
-                        outData[frame] = sample
+                        var s = inData[f] * currentVol
+                        if s > 1.0 { s = tanhf(s) }
+                        else if s < -1.0 { s = -tanhf(-s) }
+                        outData[f] = s
                     }
-                    // Zero remaining output frames
-                    if count < frameCount {
-                        for frame in count..<frameCount { outData[frame] = 0 }
-                    }
+                    for f in count..<outFrames { outData[f] = 0 }
                 } else {
-                    memset(outputBuffer.mData, 0, Int(outputBuffer.mDataByteSize))
+                    memset(outBuf.mData, 0, Int(outBuf.mDataByteSize))
                 }
             }
 
@@ -154,6 +148,7 @@ final class ProcessTap {
         }
         self.ioProcID = procID
 
+        // 7. Start
         status = AudioDeviceStart(aggregateDeviceID, procID)
         guard status == noErr else {
             AudioDeviceDestroyIOProcID(aggregateDeviceID, procID)
@@ -163,6 +158,7 @@ final class ProcessTap {
         }
 
         isRunning = true
+        AnyMixLogger.log("Tap running pid=\(pid) vol=\(targetVolume)")
     }
 
     func stop() {
@@ -174,12 +170,10 @@ final class ProcessTap {
             AudioDeviceDestroyIOProcID(aggregateDeviceID, procID)
             ioProcID = nil
         }
-
         if aggregateDeviceID != AudioObjectID(kAudioObjectUnknown) {
             AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
             aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
         }
-
         if tapID != AudioObjectID(kAudioObjectUnknown) {
             AudioHardwareDestroyProcessTap(tapID)
             tapID = AudioObjectID(kAudioObjectUnknown)
@@ -187,6 +181,18 @@ final class ProcessTap {
     }
 
     // MARK: - Helpers
+
+    private func isDeviceAlive(_ deviceID: AudioObjectID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsAlive,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var alive: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &alive)
+        return alive != 0
+    }
 
     private func getDefaultOutputDeviceUID() throws -> String {
         var address = AudioObjectPropertyAddress(
@@ -231,11 +237,11 @@ final class ProcessTap {
 
         var errorDescription: String? {
             switch self {
-            case .createTapFailed(let s): return "Failed to create process tap (OSStatus: \(s))"
-            case .createAggregateFailed(let s): return "Failed to create aggregate device (OSStatus: \(s))"
-            case .createIOProcFailed(let s): return "Failed to create IOProc (OSStatus: \(s))"
-            case .startFailed(let s): return "Failed to start audio device (OSStatus: \(s))"
-            case .noOutputDevice: return "No default output device found"
+            case .createTapFailed(let s): return "Create tap failed (\(s))"
+            case .createAggregateFailed(let s): return "Create aggregate failed (\(s))"
+            case .createIOProcFailed(let s): return "Create IOProc failed (\(s))"
+            case .startFailed(let s): return "Start failed (\(s))"
+            case .noOutputDevice: return "No output device"
             }
         }
     }
