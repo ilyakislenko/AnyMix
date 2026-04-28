@@ -20,7 +20,9 @@
     <true/>
     <key>LSMinimumSystemVersion</key>
     <string>14.2</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>AnyMix needs access to capture audio from applications to control their volume.</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>AnyMix uses audio input access to capture and control per-app audio volume.</string>
+    <string>AnyMix needs microphone access to capture audio from apps using input-capable devices.</string>
 </dict>
 </plist>
