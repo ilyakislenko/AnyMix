@@ -57,8 +57,9 @@ final class ProcessTap {
             kAudioAggregateDeviceNameKey as String: "AnyMix-\(pid)",
             kAudioAggregateDeviceUIDKey as String: UUID().uuidString,
             kAudioAggregateDeviceMainSubDeviceKey as String: outputUID,
+            kAudioAggregateDeviceClockDeviceKey as String: outputUID,
             kAudioAggregateDeviceIsPrivateKey as String: true,
-            kAudioAggregateDeviceIsStackedKey as String: false,
+            kAudioAggregateDeviceIsStackedKey as String: true,
             kAudioAggregateDeviceTapAutoStartKey as String: true,
             kAudioAggregateDeviceSubDeviceListKey as String: [
                 [kAudioSubDeviceUIDKey as String: outputUID]
@@ -99,25 +100,47 @@ final class ProcessTap {
             )
             let outputBufferList = UnsafeMutableAudioBufferListPointer(outOutputData)
 
-            for i in 0..<min(inputBufferList.count, outputBufferList.count) {
-                let inputBuffer = inputBufferList[i]
-                let outputBuffer = outputBufferList[i]
+            let inCount = inputBufferList.count
+            let outCount = outputBufferList.count
 
-                guard let inData = inputBuffer.mData?.assumingMemoryBound(to: Float.self),
-                      let outData = outputBuffer.mData?.assumingMemoryBound(to: Float.self)
-                else { continue }
+            // Tap input buffers may be offset when aggregate has more
+            // input buffers than output buffers (tap buffers come after device buffers)
+            let inputOffset = inCount > outCount ? inCount - outCount : 0
 
-                let frameCount = Int(inputBuffer.mDataByteSize) / MemoryLayout<Float>.size
+            for outIdx in 0..<outCount {
+                let inIdx = inputOffset + outIdx
+                let outputBuffer = outputBufferList[outIdx]
 
-                for frame in 0..<frameCount {
-                    currentVol += (targetGain - currentVol) * rampCoefficient
-                    var sample = inData[frame] * currentVol
-                    // Soft limiter: tanh-based to prevent clipping on boost
-                    if currentVol > 1.0 {
-                        if sample > 1.0 { sample = tanhf(sample) }
-                        else if sample < -1.0 { sample = -tanhf(-sample) }
+                guard let outData = outputBuffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
+                let frameCount = Int(outputBuffer.mDataByteSize) / MemoryLayout<Float>.size
+
+                if inIdx < inCount {
+                    let inputBuffer = inputBufferList[inIdx]
+                    guard let inData = inputBuffer.mData?.assumingMemoryBound(to: Float.self) else {
+                        // Zero output if input unavailable
+                        memset(outputBuffer.mData, 0, Int(outputBuffer.mDataByteSize))
+                        continue
                     }
-                    outData[frame] = sample
+
+                    let inFrames = Int(inputBuffer.mDataByteSize) / MemoryLayout<Float>.size
+                    let count = min(frameCount, inFrames)
+
+                    for frame in 0..<count {
+                        currentVol += (targetGain - currentVol) * rampCoefficient
+                        var sample = inData[frame] * currentVol
+                        // Soft limiter for boost
+                        if currentVol > 1.0 {
+                            if sample > 1.0 { sample = tanhf(sample) }
+                            else if sample < -1.0 { sample = -tanhf(-sample) }
+                        }
+                        outData[frame] = sample
+                    }
+                    // Zero remaining output frames
+                    if count < frameCount {
+                        for frame in count..<frameCount { outData[frame] = 0 }
+                    }
+                } else {
+                    memset(outputBuffer.mData, 0, Int(outputBuffer.mDataByteSize))
                 }
             }
 
