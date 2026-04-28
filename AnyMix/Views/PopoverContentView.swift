@@ -5,7 +5,6 @@ struct PopoverContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
             HStack {
                 Text("AnyMix")
                     .font(.system(size: 13, weight: .semibold))
@@ -40,10 +39,10 @@ struct PopoverContentView: View {
                             AppVolumeRow(
                                 app: app,
                                 onVolumeChange: { volume in
-                                    audioEngine.setVolume(volume, for: app.bundleID)
+                                    audioEngine.setVolume(volume, for: app.pid)
                                 },
                                 onToggleMute: {
-                                    audioEngine.toggleMute(for: app.bundleID)
+                                    audioEngine.toggleMute(for: app.pid)
                                 }
                             )
                         }

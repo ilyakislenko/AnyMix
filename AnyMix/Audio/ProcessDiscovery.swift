@@ -2,15 +2,14 @@ import CoreAudio
 import AppKit
 
 /// Discovers and monitors macOS processes that are producing audio output.
-/// Groups related processes (e.g. Chrome + Chrome helpers) into one entry.
 final class ProcessDiscovery: @unchecked Sendable {
 
-    var onProcessListChanged: (([AudioProcessGroup]) -> Void)?
+    var onProcessListChanged: (([AudioProcess]) -> Void)?
 
     private var listenerBlock: AudioObjectPropertyListenerBlock?
     private let listenerQueue = DispatchQueue(label: "com.anymix.processDiscovery")
 
-    /// Bundle IDs (or root bundle IDs) to always exclude.
+    /// Bundle IDs (exact or root) to always exclude.
     private static let excludedBundleIDs: Set<String> = [
         "com.anymix.app",
         "com.apple.AirPlayXPCHelper",
@@ -40,59 +39,34 @@ final class ProcessDiscovery: @unchecked Sendable {
         removeListener()
     }
 
-    /// Discover active audio processes, grouped by root app.
-    func discoverActiveProcesses() -> [AudioProcessGroup] {
+    /// Discover active audio processes. Each process gets its own entry.
+    func discoverActiveProcesses() -> [AudioProcess] {
         let processIDs = getProcessObjectList()
         let ownPID = ProcessInfo.processInfo.processIdentifier
-
-        // Collect all audio-producing processes
-        struct RawProcess {
-            let objectID: AudioObjectID
-            let pid: pid_t
-            let bundleID: String
-        }
-
-        var rawProcesses: [RawProcess] = []
+        var seen = Set<pid_t>()
+        var result: [AudioProcess] = []
 
         for objectID in processIDs {
+            guard isRunningOutput(objectID) else { continue }
             guard let pid = getPID(objectID), pid > 0, pid != ownPID else { continue }
+            guard seen.insert(pid).inserted else { continue }
 
             let bundleID = getBundleID(objectID)
             guard !bundleID.isEmpty else { continue }
 
-            let rootID = AudioProcessGroup.rootBundleID(from: bundleID)
-            guard !Self.excludedBundleIDs.contains(rootID) && !Self.excludedBundleIDs.contains(bundleID) else { continue }
+            let rootBundleID = AudioProcess.deriveRootBundleID(from: bundleID)
+            guard !Self.excludedBundleIDs.contains(rootBundleID),
+                  !Self.excludedBundleIDs.contains(bundleID) else { continue }
 
-            rawProcesses.append(RawProcess(objectID: objectID, pid: pid, bundleID: bundleID))
-        }
+            let (name, icon) = appInfo(rootBundleID: rootBundleID, pid: pid)
 
-        // Group by root bundle ID
-        var groups: [String: (objectIDs: [AudioObjectID], pids: Set<pid_t>, anyActive: Bool)] = [:]
-
-        for raw in rawProcesses {
-            let rootID = AudioProcessGroup.rootBundleID(from: raw.bundleID)
-            var group = groups[rootID] ?? (objectIDs: [], pids: [], anyActive: false)
-            group.objectIDs.append(raw.objectID)
-            group.pids.insert(raw.pid)
-            if isRunningOutput(raw.objectID) {
-                group.anyActive = true
-            }
-            groups[rootID] = group
-        }
-
-        // Only include groups where at least one process is actively outputting
-        var result: [AudioProcessGroup] = []
-        for (rootBundleID, group) in groups {
-            guard group.anyActive else { continue }
-
-            let (name, icon) = appInfo(rootBundleID: rootBundleID, pids: group.pids)
-
-            result.append(AudioProcessGroup(
-                bundleID: rootBundleID,
+            result.append(AudioProcess(
+                objectID: objectID,
+                pid: pid,
+                bundleID: bundleID,
+                rootBundleID: rootBundleID,
                 name: name,
-                icon: icon,
-                objectIDs: group.objectIDs,
-                pids: group.pids
+                icon: icon
             ))
         }
 
@@ -161,12 +135,11 @@ final class ProcessDiscovery: @unchecked Sendable {
         return cf.takeUnretainedValue() as String
     }
 
-    /// Resolve app name and icon from the root bundle ID.
-    /// Tries to find the running app first, then falls back to bundle lookup.
-    private func appInfo(rootBundleID: String, pids: Set<pid_t>) -> (String, NSImage) {
+    /// Resolve app name and icon. Uses the root bundle ID to find the parent app.
+    private func appInfo(rootBundleID: String, pid: pid_t) -> (String, NSImage) {
         let defaultIcon = NSImage(systemSymbolName: "app.fill", accessibilityDescription: nil) ?? NSImage()
 
-        // Try to find a running app matching the root bundle ID
+        // Try to find the running app by root bundle ID
         for app in NSWorkspace.shared.runningApplications {
             if app.bundleIdentifier == rootBundleID {
                 let name = app.localizedName ?? rootBundleID
@@ -175,19 +148,14 @@ final class ProcessDiscovery: @unchecked Sendable {
             }
         }
 
-        // Try to find by any of the PIDs
-        for pid in pids {
-            if let app = NSRunningApplication(processIdentifier: pid) {
-                if let appBundle = app.bundleIdentifier,
-                   AudioProcessGroup.rootBundleID(from: appBundle) == rootBundleID {
-                    let name = app.localizedName ?? rootBundleID
-                    let icon = app.icon ?? defaultIcon
-                    return (name, icon)
-                }
-            }
+        // Try by PID
+        if let app = NSRunningApplication(processIdentifier: pid) {
+            let name = app.localizedName ?? rootBundleID
+            let icon = app.icon ?? defaultIcon
+            return (name, icon)
         }
 
-        // Last resort: try to get the app name from the bundle ID
+        // Try NSWorkspace bundle lookup
         if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: rootBundleID) {
             let name = FileManager.default.displayName(atPath: appURL.path)
             let icon = NSWorkspace.shared.icon(forFile: appURL.path)

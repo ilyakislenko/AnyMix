@@ -2,9 +2,10 @@ import Foundation
 import Observation
 import AppKit
 
-/// Observable state for a single app in the UI.
+/// Observable state for a single process in the UI.
 @Observable
 final class AppAudioState: Identifiable {
+    let pid: pid_t
     let bundleID: String
     let name: String
     let icon: NSImage
@@ -12,35 +13,36 @@ final class AppAudioState: Identifiable {
     var isMuted: Bool
     var isActive: Bool
 
-    var id: String { bundleID }
+    var id: pid_t { pid }
 
-    init(group: AudioProcessGroup, volume: Float = 1.0, isMuted: Bool = false) {
-        self.bundleID = group.bundleID
-        self.name = group.name
-        self.icon = group.icon
+    init(process: AudioProcess, volume: Float = 1.0, isMuted: Bool = false) {
+        self.pid = process.pid
+        self.bundleID = process.rootBundleID
+        self.name = process.name
+        self.icon = process.icon
         self.volume = volume
         self.isMuted = isMuted
         self.isActive = true
     }
 }
 
-/// Main audio engine that connects process discovery, taps, and persistence.
+/// Main audio engine — one tap per process, each with its own slider.
 @available(macOS 14.2, *)
 @Observable
 final class AudioEngine {
     private(set) var apps: [AppAudioState] = []
     private let discovery = ProcessDiscovery()
-    private var taps: [String: ProcessTap] = [:]  // keyed by bundle ID
+    private var taps: [pid_t: ProcessTap] = [:]
     private let volumeStore: VolumeStore
-    private var removalTimers: [String: Timer] = [:]
+    private var removalTimers: [pid_t: Timer] = [:]
 
     var inactiveTimeout: TimeInterval = 30
 
     init(volumeStore: VolumeStore) {
         self.volumeStore = volumeStore
 
-        discovery.onProcessListChanged = { [weak self] groups in
-            self?.handleProcessListUpdate(groups)
+        discovery.onProcessListChanged = { [weak self] processes in
+            self?.handleProcessListUpdate(processes)
         }
 
         let initial = discovery.discoverActiveProcesses()
@@ -53,23 +55,23 @@ final class AudioEngine {
 
     // MARK: - Public API
 
-    func setVolume(_ volume: Float, for bundleID: String) {
-        guard let app = apps.first(where: { $0.bundleID == bundleID }) else { return }
+    func setVolume(_ volume: Float, for pid: pid_t) {
+        guard let app = apps.first(where: { $0.pid == pid }) else { return }
         app.volume = volume
-        taps[bundleID]?.targetVolume = volume
-        volumeStore.setVolume(volume, for: bundleID)
+        taps[pid]?.targetVolume = volume
+        volumeStore.setVolume(volume, for: app.bundleID)
     }
 
-    func setMuted(_ muted: Bool, for bundleID: String) {
-        guard let app = apps.first(where: { $0.bundleID == bundleID }) else { return }
+    func setMuted(_ muted: Bool, for pid: pid_t) {
+        guard let app = apps.first(where: { $0.pid == pid }) else { return }
         app.isMuted = muted
-        taps[bundleID]?.isMuted = muted
-        volumeStore.setMuted(muted, for: bundleID)
+        taps[pid]?.isMuted = muted
+        volumeStore.setMuted(muted, for: app.bundleID)
     }
 
-    func toggleMute(for bundleID: String) {
-        guard let app = apps.first(where: { $0.bundleID == bundleID }) else { return }
-        setMuted(!app.isMuted, for: bundleID)
+    func toggleMute(for pid: pid_t) {
+        guard let app = apps.first(where: { $0.pid == pid }) else { return }
+        setMuted(!app.isMuted, for: pid)
     }
 
     var allMuted: Bool {
@@ -77,89 +79,74 @@ final class AudioEngine {
     }
 
     func refresh() {
-        let groups = discovery.discoverActiveProcesses()
-        handleProcessListUpdate(groups)
+        let processes = discovery.discoverActiveProcesses()
+        handleProcessListUpdate(processes)
     }
 
     // MARK: - Internal
 
-    private func handleProcessListUpdate(_ groups: [AudioProcessGroup]) {
-        let currentBundleIDs = Set(groups.map(\.bundleID))
-        let existingBundleIDs = Set(apps.map(\.bundleID))
+    private func handleProcessListUpdate(_ processes: [AudioProcess]) {
+        let currentPIDs = Set(processes.map(\.pid))
+        let existingPIDs = Set(apps.map(\.pid))
 
-        // New apps
-        for group in groups where !existingBundleIDs.contains(group.bundleID) {
-            addGroup(group)
+        // New processes
+        for process in processes where !existingPIDs.contains(process.pid) {
+            addProcess(process)
         }
 
-        // Updated apps (process list may have changed — recreate tap)
-        for group in groups where existingBundleIDs.contains(group.bundleID) {
-            updateGroup(group)
-        }
-
-        // Disappeared apps
-        for app in apps where !currentBundleIDs.contains(app.bundleID) {
+        // Disappeared processes
+        for app in apps where !currentPIDs.contains(app.pid) {
             if app.isActive {
                 markInactive(app)
             }
         }
 
-        // Reappeared apps
-        for app in apps where currentBundleIDs.contains(app.bundleID) && !app.isActive {
+        // Reappeared processes
+        for app in apps where currentPIDs.contains(app.pid) && !app.isActive {
             cancelRemoval(app)
         }
     }
 
-    private func addGroup(_ group: AudioProcessGroup) {
-        let savedVolume = volumeStore.volume(for: group.bundleID)
-        let savedMuted = volumeStore.isMuted(for: group.bundleID)
+    private func addProcess(_ process: AudioProcess) {
+        let savedVolume = volumeStore.volume(for: process.rootBundleID)
+        let savedMuted = volumeStore.isMuted(for: process.rootBundleID)
 
-        let state = AppAudioState(group: group, volume: savedVolume, isMuted: savedMuted)
+        let state = AppAudioState(process: process, volume: savedVolume, isMuted: savedMuted)
 
-        let tap = ProcessTap(bundleID: group.bundleID)
+        let tap = ProcessTap(pid: process.pid)
         tap.targetVolume = savedVolume
         tap.isMuted = savedMuted
 
         do {
-            try tap.start(objectIDs: group.objectIDs)
-            taps[group.bundleID] = tap
+            try tap.start(objectID: process.objectID)
+            taps[process.pid] = tap
         } catch {
-            AnyMixLogger.log("Failed to start tap for \(group.bundleID): \(error)")
+            AnyMixLogger.log("Failed to start tap for \(process.name) (pid \(process.pid)): \(error)")
         }
 
         apps.append(state)
     }
 
-    private func updateGroup(_ group: AudioProcessGroup) {
-        // If the set of object IDs changed, recreate the tap
-        guard let existingTap = taps[group.bundleID] else { return }
-        // For now, just let the existing tap run.
-        // Recreating on every refresh would be disruptive.
-        // TODO: track objectIDs and recreate only when they change
-        _ = existingTap
-    }
-
     private func markInactive(_ app: AppAudioState) {
         app.isActive = false
-
         let timer = Timer.scheduledTimer(withTimeInterval: inactiveTimeout, repeats: false) { [weak self] _ in
-            self?.removeApp(app.bundleID)
+            self?.removeProcess(app.pid)
         }
-        removalTimers[app.bundleID] = timer
+        removalTimers[app.pid] = timer
     }
 
     private func cancelRemoval(_ app: AppAudioState) {
         app.isActive = true
-        removalTimers[app.bundleID]?.invalidate()
-        removalTimers.removeValue(forKey: app.bundleID)
+        removalTimers[app.pid]?.invalidate()
+        removalTimers.removeValue(forKey: app.pid)
     }
 
-    private func removeApp(_ bundleID: String) {
-        taps[bundleID]?.stop()
-        taps.removeValue(forKey: bundleID)
-        removalTimers[bundleID]?.invalidate()
-        removalTimers.removeValue(forKey: bundleID)
-        apps.removeAll { $0.bundleID == bundleID }
+    private func removeProcess(_ pid: pid_t) {
+        taps[pid]?.stop()
+        taps.removeValue(forKey: pid)
+        removalTimers[pid]?.invalidate()
+        removalTimers.removeValue(forKey: pid)
+        apps.removeAll { $0.pid == pid }
     }
 
     private func stopAll() {

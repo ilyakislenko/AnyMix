@@ -2,11 +2,10 @@ import CoreAudio
 import AudioToolbox
 import Foundation
 
-/// Manages a single audio tap on a group of related processes (e.g. all Chrome helpers).
-/// Creates a CATapDescription with ALL process IDs, so one slider controls all of them.
+/// Manages a single audio tap on one process.
 @available(macOS 14.2, *)
 final class ProcessTap {
-    let bundleID: String
+    let pid: pid_t
 
     /// Target volume (0.0 = silent, 1.0 = unity).
     var targetVolume: Float = 1.0
@@ -24,30 +23,27 @@ final class ProcessTap {
     private var ioProcID: AudioDeviceIOProcID?
     private var isRunning = false
 
-    // Volume ramping state (accessed from audio thread)
     private var currentVolume: Float = 1.0
-    private let rampTime: Float = 0.030 // 30ms ramp to avoid clicks
+    private let rampTime: Float = 0.030
 
-    init(bundleID: String) {
-        self.bundleID = bundleID
+    init(pid: pid_t) {
+        self.pid = pid
     }
 
     deinit {
         stop()
     }
 
-    /// Start tapping all processes in the group.
-    func start(objectIDs: [AudioObjectID]) throws {
-        guard !isRunning, !objectIDs.isEmpty else { return }
+    /// Start tapping the process audio.
+    func start(objectID: AudioObjectID) throws {
+        guard !isRunning else { return }
 
-        // Step 1: Create tap description with ALL process IDs
-        let desc = CATapDescription(stereoMixdownOfProcesses: objectIDs)
-        desc.name = "AnyMix-\(bundleID)"
+        let desc = CATapDescription(stereoMixdownOfProcesses: [objectID])
+        desc.name = "AnyMix-\(pid)"
         desc.uuid = UUID()
         desc.muteBehavior = .unmuted
         desc.isPrivate = true
 
-        // Step 2: Create process tap
         var newTapID: AudioObjectID = AudioObjectID(kAudioObjectUnknown)
         var status = AudioHardwareCreateProcessTap(desc, &newTapID)
         guard status == noErr else {
@@ -55,12 +51,10 @@ final class ProcessTap {
         }
         self.tapID = newTapID
 
-        // Step 3: Get default output device UID
         let outputUID = try getDefaultOutputDeviceUID()
 
-        // Step 4: Create aggregate device
         let aggregateDesc: [String: Any] = [
-            kAudioAggregateDeviceNameKey as String: "AnyMix-\(bundleID)",
+            kAudioAggregateDeviceNameKey as String: "AnyMix-\(pid)",
             kAudioAggregateDeviceUIDKey as String: UUID().uuidString,
             kAudioAggregateDeviceMainSubDeviceKey as String: outputUID,
             kAudioAggregateDeviceIsPrivateKey as String: true,
@@ -85,11 +79,9 @@ final class ProcessTap {
         }
         self.aggregateDeviceID = newAggregateID
 
-        // Step 5: Get sample rate for ramp coefficient
         let sampleRate = getSampleRate(aggregateDeviceID)
         let rampCoefficient: Float = 1.0 - exp(-1.0 / (Float(sampleRate) * rampTime))
 
-        // Step 6: Create IOProc
         var procID: AudioDeviceIOProcID?
         let tapSelf = Unmanaged.passUnretained(self).toOpaque()
 
@@ -99,7 +91,6 @@ final class ProcessTap {
             nil
         ) { [rampCoefficient] _, inInputData, _, outOutputData, _ in
             let tap = Unmanaged<ProcessTap>.fromOpaque(tapSelf).takeUnretainedValue()
-
             let targetGain = tap.effectiveGain
             var currentVol = tap.currentVolume
 
@@ -134,7 +125,6 @@ final class ProcessTap {
         }
         self.ioProcID = procID
 
-        // Step 7: Start
         status = AudioDeviceStart(aggregateDeviceID, procID)
         guard status == noErr else {
             AudioDeviceDestroyIOProcID(aggregateDeviceID, procID)
@@ -146,7 +136,6 @@ final class ProcessTap {
         isRunning = true
     }
 
-    /// Stop the tap and clean up all resources in reverse order.
     func stop() {
         guard isRunning else { return }
         isRunning = false
@@ -182,17 +171,13 @@ final class ProcessTap {
             AudioObjectID(kAudioObjectSystemObject),
             &address, 0, nil, &size, &deviceID
         )
-        guard status == noErr else {
-            throw TapError.noOutputDevice
-        }
+        guard status == noErr else { throw TapError.noOutputDevice }
 
         address.mSelector = kAudioDevicePropertyDeviceUID
         var uid: Unmanaged<CFString>?
         size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
         status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &uid)
-        guard status == noErr, let cf = uid else {
-            throw TapError.noOutputDevice
-        }
+        guard status == noErr, let cf = uid else { throw TapError.noOutputDevice }
         return cf.takeUnretainedValue() as String
     }
 
@@ -207,8 +192,6 @@ final class ProcessTap {
         AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &sampleRate)
         return sampleRate
     }
-
-    // MARK: - Errors
 
     enum TapError: Error, LocalizedError {
         case createTapFailed(OSStatus)

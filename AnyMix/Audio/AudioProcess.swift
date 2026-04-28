@@ -1,31 +1,21 @@
 import AppKit
 import CoreAudio
 
-/// Represents a group of related macOS processes from one app that produce audio.
-/// For example, Chrome has a main process + multiple helper processes for tabs.
-struct AudioProcessGroup: Identifiable {
-    /// The root bundle ID (e.g. "com.google.Chrome" for all Chrome helpers).
+/// Represents a single macOS process that produces audio.
+struct AudioProcess: Identifiable {
+    let objectID: AudioObjectID
+    let pid: pid_t
     let bundleID: String
-
-    /// Human-readable app name.
+    let rootBundleID: String
     let name: String
-
-    /// App icon.
     let icon: NSImage
 
-    /// All Core Audio object IDs for processes in this group.
-    var objectIDs: [AudioObjectID]
-
-    /// All PIDs in this group.
-    var pids: Set<pid_t>
-
-    var id: String { bundleID }
+    /// Unique ID — use pid so each process gets its own slider.
+    var id: pid_t { pid }
 
     /// Derive the root bundle ID from a full bundle ID.
     /// "com.google.Chrome.helper" → "com.google.Chrome"
-    /// "com.apple.WebKit.GPU" → "com.apple.WebKit.GPU" (kept as-is, filtered later)
-    static func rootBundleID(from bundleID: String) -> String {
-        // Strip common helper suffixes
+    static func deriveRootBundleID(from bundleID: String) -> String {
         let suffixes = [".helper", ".Helper", ".GPU", ".WebContent", ".Networking"]
         var root = bundleID
         for suffix in suffixes {
