@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private var eventMonitor: Any?
+    private var settingsWindow: NSWindow?
 
     let volumeStore = VolumeStore()
     private(set) var audioEngine: AudioEngine!
@@ -13,7 +14,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         audioEngine = AudioEngine(volumeStore: volumeStore)
 
-        // Create popover
         let popover = NSPopover()
         popover.contentSize = NSSize(width: 320, height: 300)
         popover.behavior = .transient
@@ -22,7 +22,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         self.popover = popover
 
-        // Create status bar item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem.button {
@@ -35,7 +34,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.target = self
         }
 
-        // Listen for settings open requests
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(openSettings),
@@ -43,7 +41,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
-        // Global click monitor to dismiss popover
         eventMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] _ in
@@ -54,7 +51,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Periodic refresh of process list
         Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             DispatchQueue.main.async {
                 self?.audioEngine.refresh()
@@ -78,27 +74,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openSettings() {
         popover.performClose(nil)
 
+        if let window = settingsWindow {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate()
+            return
+        }
+
+        let settingsView = SettingsView()
+            .environment(volumeStore)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 300),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "AnyMix Settings"
+        window.contentViewController = NSHostingController(rootView: settingsView)
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        self.settingsWindow = window
+
+        window.makeKeyAndOrderFront(nil)
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-
-        // Observe when settings window closes to go back to accessory mode
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            _ = self // prevent warning
-            if let settingsWindow = NSApp.windows.first(where: {
-                $0.identifier?.rawValue.contains("settings") == true ||
-                $0.title.lowercased().contains("settings") ||
-                $0.title.lowercased().contains("preferences")
-            }) {
-                NotificationCenter.default.addObserver(
-                    forName: NSWindow.willCloseNotification,
-                    object: settingsWindow,
-                    queue: .main
-                ) { _ in
-                    NSApp.setActivationPolicy(.accessory)
-                }
-            }
-        }
     }
 
     private func updateStatusIcon() {
@@ -109,5 +109,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             accessibilityDescription: "AnyMix"
         )
         button.image?.isTemplate = true
+    }
+}
+
+extension AppDelegate: NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+        settingsWindow = nil
     }
 }
