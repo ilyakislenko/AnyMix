@@ -47,4 +47,4 @@ Working, self-signed, unreleased. No notarized build yet.
 
 ## License
 
-No license yet — all rights reserved.
+MIT
